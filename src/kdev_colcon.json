@@ -1,0 +1,12 @@
+{
+    "KPlugin": {
+        "Description": "kdev_colcon",
+        "Id": "kdev_colcon",
+        "Name": "kdev_colcon",
+        "ServiceTypes": [
+            "KDevelop/Plugin"
+        ]
+    },
+    "X-KDevelop-Category": "Global",
+    "X-KDevelop-Mode": "GUI"
+}

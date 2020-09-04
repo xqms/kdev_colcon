@@ -1,0 +1,5 @@
+# KDebugSettings data file
+# Format:
+# logname<space>description
+
+kdevelop.plugins.kdev_colcon KDevelop plugin: kdev_colcon
