@@ -10,6 +10,7 @@
 #include <interfaces/icore.h>
 #include <interfaces/iruntime.h>
 #include <interfaces/iruntimecontroller.h>
+#include <util/path.h>
 
 #include <KShell>
 #include <QJsonDocument>
@@ -20,10 +21,19 @@
 #include <QRegularExpression>
 
 #include <wordexp.h>
+#include <unistd.h>
+#include <getopt.h>
 
 using namespace KDevelop;
 
 namespace {
+
+enum class CmdParseState
+{
+    Default,
+    Include,
+    Ignore,
+};
 
 ColconFilesCompilationData importCommands(const Path& commandsFile)
 {
@@ -76,142 +86,175 @@ ColconFilesCompilationData importCommands(const Path& commandsFile)
 
         ColconFile ret;
 
-        auto addInclude = [&](const QString& path){
+        KDevelop::Path buildPath{entry[KEY_DIRECTORY].toString()};
 
+        auto addInclude = [&](const QString& pathStr){
+            if(pathStr.startsWith('/'))
+                ret.includes << KDevelop::Path{pathStr};
+            else
+                ret.includes << KDevelop::Path{buildPath, pathStr};
         };
 
+        CmdParseState state = CmdParseState::Default;
+
+        qCDebug(COLCON) << "Parsing:" << cmd;
         for(std::size_t i = 1; i < expanded.we_wordc; ++i)
         {
             QString word = QString::fromUtf8(expanded.we_wordv[i]);
 
-            if(word.startsWith("-D"))
+            switch(state)
             {
-                int idx = word.indexOf("=");
-                if(idx >= 0)
-                    ret.defines[word.mid(2, idx-2)] = word.right(idx+1);
-                else
-                    ret.defines[word.mid(2)] = "";
-            }
-            else if(word.startsWith("-U"))
-            {
-                ret.defines.remove(word);
-            }
-            else if(word.startsWith("-I"))
-                addInclude(word.mid(2));
-            else if(word.startsWith("-isystem"))
-            {
-                QString path = word.mid(2);
-                if(path.startsWith('/'))
+                case CmdParseState::Default:
+                {
+                    if(word.startsWith("-D"))
+                    {
+                        int idx = word.indexOf("=");
+                        if(idx >= 0)
+                            ret.defines[word.mid(2, idx-2)] = word.mid(idx+1);
+                        else
+                            ret.defines[word.mid(2)] = "";
+                    }
+                    else if(word.startsWith("-U"))
+                    {
+                        ret.defines.remove(word);
+                    }
+                    else if(word.startsWith("-I"))
+                        addInclude(word.mid(2));
+                    else if(word == "-isystem")
+                        state = CmdParseState::Include;
+                    else if(word.startsWith("-o"))
+                    {
+                        if(word == "-o")
+                            state = CmdParseState::Ignore;
+                    }
+                    else if(word == "-c")
+                    {
+                    }
+                    else if(word.startsWith('-'))
+                    {
+                        if(!ret.compileFlags.isEmpty())
+                            ret.compileFlags += " ";
+
+                        ret.compileFlags += word;
+                    }
+
+                    break;
+                }
+                case CmdParseState::Include:
+                {
+                    addInclude(word);
+                    state = CmdParseState::Default;
+                    break;
+                }
+                case CmdParseState::Ignore:
+                {
+                    state = CmdParseState::Default;
+                    break;
+                }
             }
         }
 
         wordfree(&expanded);
 
-        PathResolutionResult result = resolver.processOutput(entry[KEY_COMMAND].toString(), entry[KEY_DIRECTORY].toString());
-
-        auto convert = [rt](const Path &path) { return rt->pathInHost(path); };
-
-
-        ret.includes = kTransform<Path::List>(result.paths, convert);
-        ret.frameworkDirectories = kTransform<Path::List>(result.frameworkDirectories, convert);
-        ret.defines = result.defines;
         const Path path(rt->pathInHost(Path(entry[KEY_FILE].toString())));
         qCDebug(COLCON) << "entering..." << path << entry[KEY_FILE];
+        qCDebug(COLCON) << "compile flags:" << ret.compileFlags;
+        qCDebug(COLCON) << "includes:" << ret.includes;
+        qCDebug(COLCON) << "defines:" << ret.defines;
+
+        if(ret.compileFlags.contains(".cpp.o"))
+            std::abort();
+
+        QHashIterator<QString, QString> it(ret.defines);
+        while(it.hasNext())
+        {
+            it.next();
+            if(it.key().contains(".cpp.o") || it.value().contains(".cpp.o"))
+                std::abort();
+        }
+
+        for(auto& v : ret.includes)
+        {
+            if(v.toLocalFile().contains(".cpp.o"))
+                std::abort();
+        }
+
+        if(entry[KEY_FILE].toString().contains("load/transit.cpp"))
+            std::abort();
+
         data.files[path] = ret;
     }
+
+//     std::abort();
 
     data.isValid = true;
     data.rebuildFileForFolderMapping();
     return data;
 }
 
-ImportData import(const Path& commandsFile, const Path &targetsFilePath, const QString &sourceDir, const KDevelop::Path &buildPath)
+ImportData import(const Path& commandsFile)
 {
-    QHash<KDevelop::Path, QVector<CMakeTarget>> cmakeTargets;
-
-    //we don't have target type information in json, so we just announce all of them as exes
-    const auto targets = CMake::enumerateTargets(targetsFilePath, sourceDir, buildPath);
-    for(auto it = targets.constBegin(), itEnd = targets.constEnd(); it!=itEnd; ++it) {
-        cmakeTargets[it.key()] = kTransform<QVector<CMakeTarget>>(*it, [](const QString &targetName) {
-            return CMakeTarget{
-                CMakeTarget::Executable,
-                targetName,
-                KDevelop::Path::List(),
-                KDevelop::Path::List(),
-                QString()
-            };
-        });
-    }
-
     return ImportData {
         importCommands(commandsFile),
-        cmakeTargets,
-        CMake::importTestSuites(buildPath)
     };
 }
 
 }
 
-CMakeImportJsonJob::CMakeImportJsonJob(IProject* project, QObject* parent)
+ColconImportJsonJob::ColconImportJsonJob(IProject* project, QObject* parent)
     : KJob(parent)
     , m_project(project)
     , m_data({})
 {
-    connect(&m_futureWatcher, &QFutureWatcher<ImportData>::finished, this, &CMakeImportJsonJob::importCompileCommandsJsonFinished);
+    connect(&m_futureWatcher, &QFutureWatcher<ImportData>::finished, this, &ColconImportJsonJob::importCompileCommandsJsonFinished);
 }
 
-CMakeImportJsonJob::~CMakeImportJsonJob()
+ColconImportJsonJob::~ColconImportJsonJob()
 {}
 
-void CMakeImportJsonJob::start()
+void ColconImportJsonJob::start()
 {
-    auto commandsFile = CMake::commandsFile(project());
-    if (!QFileInfo::exists(commandsFile.toLocalFile())) {
-        qCWarning(CMAKE) << "Could not import CMake project" << project()->path() << "('compile_commands.json' missing)";
+    KDevelop::Path commandsFile(project()->path(), "../build/compile_commands.json");
+    if (!QFileInfo::exists(commandsFile.toLocalFile()))
+    {
+        qCWarning(COLCON) << "Could not import Colcon project" << project()->path() << "('compile_commands.json' missing)";
         emitResult();
         return;
     }
 
-    const Path currentBuildDir = CMake::currentBuildDir(m_project);
-    Q_ASSERT (!currentBuildDir.isEmpty());
-
-    const Path targetsFilePath = CMake::targetDirectoriesFile(m_project);
-    const QString sourceDir = m_project->path().toLocalFile();
-    auto rt = ICore::self()->runtimeController()->currentRuntime();
-
-    auto future = QtConcurrent::run(import, commandsFile, targetsFilePath, sourceDir, rt->pathInRuntime(currentBuildDir));
+    auto future = QtConcurrent::run(import, commandsFile);
     m_futureWatcher.setFuture(future);
 }
 
-void CMakeImportJsonJob::importCompileCommandsJsonFinished()
+void ColconImportJsonJob::importCompileCommandsJsonFinished()
 {
     Q_ASSERT(m_project->thread() == QThread::currentThread());
     Q_ASSERT(m_futureWatcher.isFinished());
 
     auto future = m_futureWatcher.future();
     auto data = future.result();
-    if (!data.compilationData.isValid) {
-        qCWarning(CMAKE) << "Could not import CMake project ('compile_commands.json' invalid)";
+    if (!data.compilationData.isValid)
+    {
+        qCWarning(COLCON) << "Could not import Colcon project ('compile_commands.json' invalid)";
         emitResult();
         return;
     }
 
-    m_data = {data.compilationData, data.targets, data.testSuites, {}};
-    qCDebug(CMAKE) << "Done importing, found" << data.compilationData.files.count() << "entries for" << project()->path();
+    m_data = {data.compilationData};
+    qCDebug(COLCON) << "Done importing, found" << data.compilationData.files.count() << "entries for" << project()->path();
 
     emitResult();
 }
 
-IProject* CMakeImportJsonJob::project() const
+IProject* ColconImportJsonJob::project() const
 {
     return m_project;
 }
 
-CMakeProjectData CMakeImportJsonJob::projectData() const
+ColconProjectData ColconImportJsonJob::projectData() const
 {
     Q_ASSERT(!m_futureWatcher.isRunning());
     return m_data;
 }
 
-#include "moc_cmakeimportjsonjob.cpp"
-
+#include "moc_colcon_import_json_job.cpp"

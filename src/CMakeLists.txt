@@ -1,5 +1,7 @@
 set(kdev_colcon_SRCS
-    kdev_colcon.cpp
+    colcon_manager.cpp
+    colcon_import_json_job.cpp
+    colcon_project_data.cpp
 )
 
 ecm_qt_declare_logging_category(kdev_colcon_SRCS
@@ -15,4 +17,6 @@ kdevplatform_add_plugin(kdev_colcon
 
 target_link_libraries(kdev_colcon
     KDev::Interfaces
+    KDev::Util
+    KDev::Project
 )
