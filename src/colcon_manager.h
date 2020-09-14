@@ -10,8 +10,11 @@
 
 #include <project/projectmodel.h>
 
+#include <memory>
+
 class ColconProjectData;
-class ColconFile;
+struct ColconFile;
+class ColconFilesCompilationData;
 
 class ColconManager
   : public KDevelop::AbstractFileManagerPlugin
@@ -57,11 +60,16 @@ public:
 
     KDevelop::IProjectBuilder* builder() const override;
 
+    bool reload(KDevelop::ProjectFolderItem* folder) override;
+
+private Q_SLOTS:
+    void projectClosing(KDevelop::IProject*);
+
 private:
-    void integrateData(const ColconProjectData& data, KDevelop::IProject* project);
+    bool integrateData(const ColconFilesCompilationData& data, KDevelop::IProject* project);
     ColconFile fileInformation(KDevelop::ProjectBaseItem* item) const;
 
-    QHash<KDevelop::IProject*, ColconProjectData> m_projectData;
+    std::unordered_map<KDevelop::IProject*, std::unique_ptr<ColconProjectData>> m_projectData;
 };
 
 #endif

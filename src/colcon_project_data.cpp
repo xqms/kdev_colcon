@@ -1,6 +1,18 @@
 
 #include "colcon_project_data.h"
 
+#include <KDirWatch>
+
+bool operator==(const ColconFile& a, const ColconFile& b)
+{
+    return
+        a.compileFlags == b.compileFlags
+        && a.defines == b.defines
+        && a.frameworkDirectories == b.frameworkDirectories
+        && a.includes == b.includes
+        && a.language == b.language;
+}
+
 void ColconFilesCompilationData::rebuildFileForFolderMapping()
 {
     fileForFolder.clear();
@@ -25,3 +37,5 @@ void ColconFilesCompilationData::rebuildFileForFolderMapping()
         }
     }
 }
+
+ColconProjectData::~ColconProjectData() = default;

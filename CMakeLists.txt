@@ -13,6 +13,8 @@ include(FeatureSummary)
 
 find_package(KDevPlatform 5.2.40 REQUIRED)
 
+set(CMAKE_CXX_STANDARD 17)
+
 add_subdirectory(src)
 
 # kdebugsettings file

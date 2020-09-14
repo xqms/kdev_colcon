@@ -8,19 +8,21 @@
 #include <QHash>
 #include <util/path.h>
 #include <QDebug>
+#include <QPointer>
+
+class KDirWatch;
 
 /**
  * Contains the required information to compile it properly
  */
-struct ColconFile
+class ColconFile
 {
+public:
     KDevelop::Path::List includes;
     KDevelop::Path::List frameworkDirectories;
     QString compileFlags;
     QString language;
     QHash<QString, QString> defines;
-
-    void addDefine(const QString& define);
 
     bool isEmpty() const
     {
@@ -36,8 +38,14 @@ inline QDebug &operator<<(QDebug debug, const ColconFile& file)
     return debug.maybeSpace();
 }
 
-struct ColconFilesCompilationData
+bool operator==(const ColconFile& a, const ColconFile& b);
+
+inline bool operator!=(const ColconFile& a, const ColconFile& b)
+{ return !(a == b); }
+
+class ColconFilesCompilationData
 {
+public:
     QHash<KDevelop::Path, ColconFile> files;
     bool isValid = false;
     /// lookup table to quickly find a file path for a given folder path
@@ -47,9 +55,20 @@ struct ColconFilesCompilationData
     void rebuildFileForFolderMapping();
 };
 
-struct ColconProjectData
+class ColconProjectData
 {
+public:
+    ColconProjectData() = default;
+    ColconProjectData(const ColconProjectData&) = delete;
+    ColconProjectData(ColconProjectData&&) = default;
+    ~ColconProjectData();
+
+    ColconProjectData& operator=(const ColconProjectData&) = delete;
+    ColconProjectData& operator=(ColconProjectData&&) = default;
+
     ColconFilesCompilationData compilationData;
+
+    QPointer<KDirWatch> jsonWatcher;
 };
 
 #endif

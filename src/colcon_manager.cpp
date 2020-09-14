@@ -5,7 +5,10 @@
 
 #include "colcon_import_json_job.h"
 
+#include <interfaces/icore.h>
 #include <interfaces/iproject.h>
+#include <interfaces/iprojectcontroller.h>
+#include <interfaces/iruncontroller.h>
 #include <util/executecompositejob.h>
 
 #include <debug.h>
@@ -13,13 +16,22 @@
 #include <QMessageBox>
 #include <QFileInfo>
 
+#include <KDirWatch>
 #include <KPluginFactory>
+
+#include <memory>
 
 K_PLUGIN_FACTORY_WITH_JSON(kdev_colconFactory, "kdev_colcon.json", registerPlugin<ColconManager>(); )
 
 ColconManager::ColconManager(QObject* parent, const QVariantList&)
  : KDevelop::AbstractFileManagerPlugin(QStringLiteral("kdev_colcon"), parent)
 {
+    connect(
+        KDevelop::ICore::self()->projectController(),
+            &KDevelop::IProjectController::projectClosing,
+        this,
+            &ColconManager::projectClosing
+    );
 }
 
 ColconManager::~ColconManager()
@@ -52,10 +64,14 @@ KJob* ColconManager::createImportJob(KDevelop::ProjectFolderItem* item)
 {
     auto project = item->project();
 
-    auto job = new ColconImportJsonJob(project, this);
-    connect(job, &ColconImportJsonJob::result, this, [this, job]() {
+    const KDevelop::Path jsonPath(project->path(),  "../build/compile_commands.json");
+
+    auto job = new ColconImportJsonJob(jsonPath.toLocalFile(), this);
+    connect(job, &ColconImportJsonJob::result, this, [this, job, project]() {
         if (job->error() == 0)
-            integrateData(job->projectData(), job->project());
+        {
+            integrateData(job->data(), project);
+        }
     });
 
     const QList<KJob*> jobs = {
@@ -69,14 +85,90 @@ KJob* ColconManager::createImportJob(KDevelop::ProjectFolderItem* item)
     return composite;
 }
 
-void ColconManager::integrateData(const ColconProjectData& data, KDevelop::IProject* project)
+bool ColconManager::integrateData(const ColconFilesCompilationData& data, KDevelop::IProject* project)
 {
-    m_projectData[project] = data;
+    auto it = m_projectData.find(project);
+
+    if(it == m_projectData.end())
+    {
+        auto projectData = std::make_unique<ColconProjectData>();
+
+        projectData->compilationData = std::move(data);
+
+        const KDevelop::Path jsonPath(project->path(),  "../build/compile_commands.json");
+
+        projectData->jsonWatcher = new KDirWatch();
+        projectData->jsonWatcher->addFile(jsonPath.toLocalFile());
+
+        connect(projectData->jsonWatcher, &KDirWatch::dirty, [this, jsonPath, project](){
+            qCWarning(COLCON) << "DirWatch says JSON has changed!";
+            auto job = new ColconImportJsonJob(jsonPath.toLocalFile(), this);
+            connect(job, &ColconImportJsonJob::result, this, [this, job, project]() {
+                if(job->error() == 0)
+                {
+                    if(integrateData(job->data(), project))
+                    {
+                        qCDebug(COLCON) << "Triggering reparse...";
+                        emit KDevelop::ICore::self()->projectController()->projectConfigurationChanged(project);
+                        KDevelop::ICore::self()->projectController()->reparseProject(project);
+                    }
+                }
+            });
+
+            project->setReloadJob(job);
+            KDevelop::ICore::self()->runController()->registerJob(job);
+        });
+
+        m_projectData[project] = std::move(projectData);
+
+        return true;
+    }
+    else
+    {
+        auto& projectData = it->second;
+        auto& currentFiles = projectData->compilationData.files;
+
+        bool changed = false;
+
+        QHashIterator<KDevelop::Path, ColconFile> fileIt(data.files);
+        while(fileIt.hasNext())
+        {
+            fileIt.next();
+
+            auto cFileIt = currentFiles.find(fileIt.key());
+            if(cFileIt == currentFiles.end())
+            {
+                currentFiles[fileIt.key()] = fileIt.value();
+                changed = true;
+            }
+            else
+            {
+                auto& currentValue = cFileIt.value();
+                if(currentValue != fileIt.value())
+                {
+                    currentValue = fileIt.value();
+                    changed = true;
+                }
+            }
+        }
+
+        if(changed)
+        {
+            qCWarning(COLCON) << "JSON changed";
+            projectData->compilationData.rebuildFileForFolderMapping();
+        }
+
+        return changed;
+    }
 }
 
 ColconFile ColconManager::fileInformation(KDevelop::ProjectBaseItem* item) const
 {
-    const auto& data = m_projectData[item->project()].compilationData;
+    auto it = m_projectData.find(item->project());
+    if(it == m_projectData.end())
+        return {};
+
+    const auto& data = it->second->compilationData;
 
     auto toCanonicalPath = [](const KDevelop::Path &path) -> KDevelop::Path {
         // if the path contains a symlink, then we will not find it in the lookup table
@@ -182,7 +274,11 @@ bool ColconManager::removeTarget(KDevelop::ProjectTargetItem*)
 
 bool ColconManager::hasBuildInfo(KDevelop::ProjectBaseItem* item) const
 {
-	return m_projectData[item->project()].compilationData.files.contains(item->path());
+    auto it = m_projectData.find(item->project());
+    if(it == m_projectData.end())
+        return false;
+
+    return it->second->compilationData.files.contains(item->path());
 }
 
 KDevelop::IProjectBuilder* ColconManager::builder() const
@@ -195,5 +291,34 @@ KDevelop::Path ColconManager::buildDirectory(KDevelop::ProjectBaseItem*) const
     return {};
 }
 
+bool ColconManager::reload(KDevelop::ProjectFolderItem* folder)
+{
+    qCDebug(COLCON) << "reloading" << folder->path();
+
+    KDevelop::IProject* project = folder->project();
+    if(!project->isReady())
+        return false;
+
+    KJob *job = createImportJob(folder);
+    project->setReloadJob(job);
+    KDevelop::ICore::self()->runController()->registerJob( job );
+    if(folder == project->projectItem())
+    {
+        connect(job, &KJob::finished, this, [project](KJob* job) {
+            if (job->error())
+                return;
+
+            emit KDevelop::ICore::self()->projectController()->projectConfigurationChanged(project);
+            KDevelop::ICore::self()->projectController()->reparseProject(project);
+        });
+    }
+
+    return true;
+}
+
+void ColconManager::projectClosing(KDevelop::IProject* project)
+{
+    m_projectData.erase(project);
+}
 
 #include "colcon_manager.moc"

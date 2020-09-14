@@ -12,7 +12,9 @@
 #include <interfaces/iruntimecontroller.h>
 #include <util/path.h>
 
+#include <KDirWatch>
 #include <KShell>
+
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonArray>
@@ -35,10 +37,10 @@ enum class CmdParseState
     Ignore,
 };
 
-ColconFilesCompilationData importCommands(const Path& commandsFile)
+ColconFilesCompilationData importCommands(const QString& commandsFile)
 {
     // NOTE: to get compile_commands.json, you need -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-    QFile f(commandsFile.toLocalFile());
+    QFile f(commandsFile);
     bool r = f.open(QFile::ReadOnly|QFile::Text);
     if(!r) {
         qCWarning(COLCON) << "Couldn't open commands file" << commandsFile;
@@ -97,7 +99,6 @@ ColconFilesCompilationData importCommands(const Path& commandsFile)
 
         CmdParseState state = CmdParseState::Default;
 
-        qCDebug(COLCON) << "Parsing:" << cmd;
         for(std::size_t i = 1; i < expanded.we_wordc; ++i)
         {
             QString word = QString::fromUtf8(expanded.we_wordv[i]);
@@ -157,56 +158,26 @@ ColconFilesCompilationData importCommands(const Path& commandsFile)
         wordfree(&expanded);
 
         const Path path(rt->pathInHost(Path(entry[KEY_FILE].toString())));
-        qCDebug(COLCON) << "entering..." << path << entry[KEY_FILE];
-        qCDebug(COLCON) << "compile flags:" << ret.compileFlags;
-        qCDebug(COLCON) << "includes:" << ret.includes;
-        qCDebug(COLCON) << "defines:" << ret.defines;
-
-        if(ret.compileFlags.contains(".cpp.o"))
-            std::abort();
-
-        QHashIterator<QString, QString> it(ret.defines);
-        while(it.hasNext())
-        {
-            it.next();
-            if(it.key().contains(".cpp.o") || it.value().contains(".cpp.o"))
-                std::abort();
-        }
-
-        for(auto& v : ret.includes)
-        {
-            if(v.toLocalFile().contains(".cpp.o"))
-                std::abort();
-        }
-
-        if(entry[KEY_FILE].toString().contains("load/transit.cpp"))
-            std::abort();
+//         qCDebug(COLCON) << "entering..." << path << entry[KEY_FILE];
+//         qCDebug(COLCON) << "compile flags:" << ret.compileFlags;
+//         qCDebug(COLCON) << "includes:" << ret.includes;
+//         qCDebug(COLCON) << "defines:" << ret.defines;
 
         data.files[path] = ret;
     }
-
-//     std::abort();
 
     data.isValid = true;
     data.rebuildFileForFolderMapping();
     return data;
 }
 
-ImportData import(const Path& commandsFile)
-{
-    return ImportData {
-        importCommands(commandsFile),
-    };
 }
 
-}
-
-ColconImportJsonJob::ColconImportJsonJob(IProject* project, QObject* parent)
+ColconImportJsonJob::ColconImportJsonJob(const QString& filename, QObject* parent)
     : KJob(parent)
-    , m_project(project)
-    , m_data({})
+    , m_filename{filename}
 {
-    connect(&m_futureWatcher, &QFutureWatcher<ImportData>::finished, this, &ColconImportJsonJob::importCompileCommandsJsonFinished);
+    connect(&m_futureWatcher, &QFutureWatcher<ColconFilesCompilationData>::finished, this, &ColconImportJsonJob::importCompileCommandsJsonFinished);
 }
 
 ColconImportJsonJob::~ColconImportJsonJob()
@@ -214,44 +185,38 @@ ColconImportJsonJob::~ColconImportJsonJob()
 
 void ColconImportJsonJob::start()
 {
-    KDevelop::Path commandsFile(project()->path(), "../build/compile_commands.json");
-    if (!QFileInfo::exists(commandsFile.toLocalFile()))
+    if (!QFileInfo::exists(m_filename))
     {
-        qCWarning(COLCON) << "Could not import Colcon project" << project()->path() << "('compile_commands.json' missing)";
+        qCWarning(COLCON) << "Could not import Colcon project, JSON file" << m_filename << "is missing.";
         emitResult();
         return;
     }
 
-    auto future = QtConcurrent::run(import, commandsFile);
+    auto future = QtConcurrent::run(importCommands, m_filename);
     m_futureWatcher.setFuture(future);
 }
 
 void ColconImportJsonJob::importCompileCommandsJsonFinished()
 {
-    Q_ASSERT(m_project->thread() == QThread::currentThread());
+    Q_ASSERT(thread() == QThread::currentThread());
     Q_ASSERT(m_futureWatcher.isFinished());
 
     auto future = m_futureWatcher.future();
     auto data = future.result();
-    if (!data.compilationData.isValid)
+    if (!data.isValid)
     {
         qCWarning(COLCON) << "Could not import Colcon project ('compile_commands.json' invalid)";
         emitResult();
         return;
     }
 
-    m_data = {data.compilationData};
-    qCDebug(COLCON) << "Done importing, found" << data.compilationData.files.count() << "entries for" << project()->path();
+    qCDebug(COLCON) << "Done importing, extracted" << data.files.count() << "entries from" << m_filename;
+    m_data = std::move(data);
 
     emitResult();
 }
 
-IProject* ColconImportJsonJob::project() const
-{
-    return m_project;
-}
-
-ColconProjectData ColconImportJsonJob::projectData() const
+const ColconFilesCompilationData& ColconImportJsonJob::data() const
 {
     Q_ASSERT(!m_futureWatcher.isRunning());
     return m_data;

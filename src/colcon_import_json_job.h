@@ -12,17 +12,6 @@
 
 #include <QFutureWatcher>
 
-class ColconFolderItem;
-
-struct ImportData {
-    ColconFilesCompilationData compilationData;
-};
-
-namespace KDevelop
-{
-class IProject;
-}
-
 class ColconImportJsonJob : public KJob
 {
 Q_OBJECT
@@ -33,23 +22,21 @@ public:
         ReadError ///< Failed to read the JSON file
     };
 
-    ColconImportJsonJob(KDevelop::IProject* project, QObject* parent);
+    ColconImportJsonJob(const QString& filename, QObject* parent);
     ~ColconImportJsonJob() override;
 
     void start() override;
 
-    KDevelop::IProject* project() const;
-
-    ColconProjectData projectData() const;
+    const ColconFilesCompilationData& data() const;
 
 private Q_SLOTS:
     void importCompileCommandsJsonFinished();
 
 private:
-    KDevelop::IProject* m_project;
-    QFutureWatcher<ImportData> m_futureWatcher;
+    QString m_filename;
+    QFutureWatcher<ColconFilesCompilationData> m_futureWatcher;
 
-    ColconProjectData m_data;
+    ColconFilesCompilationData m_data;
 };
 
 #endif // COLCON_IMPORT_JSON_JOB_H
