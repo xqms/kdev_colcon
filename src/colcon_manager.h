@@ -7,6 +7,7 @@
 #include <project/abstractfilemanagerplugin.h>
 #include <project/interfaces/iprojectfilemanager.h>
 #include <project/interfaces/ibuildsystemmanager.h>
+#include <project/interfaces/iprojectbuilder.h>
 
 #include <project/projectmodel.h>
 
@@ -20,11 +21,13 @@ class ColconManager
   : public KDevelop::AbstractFileManagerPlugin
   , public virtual KDevelop::IProjectFileManager
   , public virtual KDevelop::IBuildSystemManager
+  , public virtual KDevelop::IProjectBuilder
 {
 Q_OBJECT
 
 Q_INTERFACES(KDevelop::IProjectFileManager)
 Q_INTERFACES(KDevelop::IBuildSystemManager)
+Q_INTERFACES(KDevelop::IProjectBuilder)
 
 public:
     ColconManager(QObject* parent = nullptr, const QVariantList& args = QVariantList());
@@ -61,6 +64,11 @@ public:
     KDevelop::IProjectBuilder* builder() const override;
 
     bool reload(KDevelop::ProjectFolderItem* folder) override;
+
+// IProjectBuilder
+    KJob* build(KDevelop::ProjectBaseItem* item) override;
+    KJob* install(KDevelop::ProjectBaseItem* item, const QUrl& specificPrefix) override;
+    KJob* clean(KDevelop::ProjectBaseItem* item) override;
 
 private Q_SLOTS:
     void projectClosing(KDevelop::IProject*);

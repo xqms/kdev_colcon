@@ -4,6 +4,7 @@
 #include "colcon_manager.h"
 
 #include "colcon_import_json_job.h"
+#include "colcon_build_job.h"
 
 #include <interfaces/icore.h>
 #include <interfaces/iproject.h>
@@ -283,7 +284,7 @@ bool ColconManager::hasBuildInfo(KDevelop::ProjectBaseItem* item) const
 
 KDevelop::IProjectBuilder* ColconManager::builder() const
 {
-    return nullptr;
+    return const_cast<IProjectBuilder*>(static_cast<const IProjectBuilder*>(this));
 }
 
 KDevelop::Path ColconManager::buildDirectory(KDevelop::ProjectBaseItem*) const
@@ -319,6 +320,24 @@ bool ColconManager::reload(KDevelop::ProjectFolderItem* folder)
 void ColconManager::projectClosing(KDevelop::IProject* project)
 {
     m_projectData.erase(project);
+}
+
+KJob* ColconManager::build(KDevelop::ProjectBaseItem* item)
+{
+    return new ColconBuildJob(item->project(), this);
+}
+
+KJob* ColconManager::install(KDevelop::ProjectBaseItem* item, const QUrl& specificPrefix)
+{
+    Q_UNUSED(item);
+    Q_UNUSED(specificPrefix);
+    return nullptr;
+}
+
+KJob* ColconManager::clean(KDevelop::ProjectBaseItem* item)
+{
+    Q_UNUSED(item);
+    return nullptr;
 }
 
 #include "colcon_manager.moc"

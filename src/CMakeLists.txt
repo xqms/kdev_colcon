@@ -2,6 +2,7 @@ set(kdev_colcon_SRCS
     colcon_manager.cpp
     colcon_import_json_job.cpp
     colcon_project_data.cpp
+    colcon_build_job.cpp
 )
 
 ecm_qt_declare_logging_category(kdev_colcon_SRCS
