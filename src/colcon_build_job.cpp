@@ -8,95 +8,84 @@
 #include <interfaces/iproject.h>
 #include <outputview/outputdelegate.h>
 #include <outputview/outputmodel.h>
+#include <outputview/outputfilteringstrategies.h>
 #include <util/commandexecutor.h>
 #include <util/environmentprofilelist.h>
 #include <util/path.h>
 
+#include <debug.h>
+
 ColconBuildJob::ColconBuildJob(KDevelop::IProject* project, QObject* parent)
- : OutputJob{parent}
+ : OutputExecuteJob{parent}
 {
+    setToolTitle(i18n("Colcon"));
     setCapabilities(Killable);
-
-    QString title = i18nc("Building: <project name>", "Building: %1", project->name());
-    setTitle(title);
-    setObjectName(title);
-    setDelegate(new KDevelop::OutputDelegate);
-
-    m_workspace = project->path().parent().toLocalFile();
-}
-
-void ColconBuildJob::start()
-{
     setStandardToolView(KDevelop::IOutputView::BuildView);
     setBehaviours(KDevelop::IOutputView::AllowUserClose | KDevelop::IOutputView::AutoScroll);
+    setFilteringStrategy(KDevelop::OutputModel::CompilerFilter);
+    setProperties(NeedWorkingDirectory | PortableMessages | DisplayStderr | IsBuilderHint | PostProcessOutput);
 
-    auto* model = new KDevelop::OutputModel({});
-    model->setFilteringStrategy(KDevelop::OutputModel::CompilerFilter);
-    setModel(model);
+    // We want to get feedback immediately, so switch off line buffering
+    addEnvironmentOverride(QStringLiteral("PYTHONUNBUFFERED"), QStringLiteral("1"));
 
-    startOutput();
-
-    QString cmd = ". /opt/ros/melodic/setup.sh && colcon build"
+    // We need a post-processing step with tr, since colcon separates its status
+    // line prints with \r, which is not recognized as a line delimiter by
+    // KDevelop's line splitter...
+    *this << "bash"
+        << "-c"
+        << ". /opt/ros/melodic/setup.sh && stdbuf -o0 colcon build"
         " --symlink-install"
         " --event-handlers status+ console_start_end-"
-        " --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo";
-    m_exec = new KDevelop::CommandExecutor(cmd, this);
-    m_exec->setUseShell(true);
+        " --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo"
+        " | stdbuf -o0 tr '\\r' '\\n'";
 
-    m_exec->setWorkingDirectory(m_workspace);
+    QString title = i18nc("Building: <project name>", "Building: %1", project->name());
+    setJobName(title);
 
-    connect(m_exec, &KDevelop::CommandExecutor::completed, this, &ColconBuildJob::procFinished);
-    connect(m_exec, &KDevelop::CommandExecutor::failed, this, &ColconBuildJob::procError);
-
-    connect(m_exec, &KDevelop::CommandExecutor::receivedStandardError, model, &KDevelop::OutputModel::appendLines);
-    connect(m_exec, &KDevelop::CommandExecutor::receivedStandardOutput, model, &KDevelop::OutputModel::appendLines);
-
-    model->appendLine(QStringLiteral("%1> %2").arg(m_workspace, cmd));
-    m_exec->start();
+    setWorkingDirectory(project->path().parent().toUrl());
 }
 
-bool ColconBuildJob::doKill()
+void ColconBuildJob::postProcessStderr(const QStringList& lines)
 {
-    m_killed = true;
-    m_exec->kill();
-    return true;
+    appendLines(lines);
 }
 
-void ColconBuildJob::procError(QProcess::ProcessError error)
+void ColconBuildJob::postProcessStdout(const QStringList& lines)
 {
-    if(!m_killed)
+    appendLines(lines);
+}
+
+void ColconBuildJob::appendLines(const QStringList& lines)
+{
+    static const QRegularExpression re(QStringLiteral(
+        R"EOS(^\[[^\]]+\] \[([0-9]+)\/([0-9]+) complete\](.*))EOS"));
+
+    QStringList ret(lines);
+    for(QStringList::iterator it = ret.begin(); it != ret.end(); )
     {
-        if(error == QProcess::FailedToStart)
+        if(it->trimmed().isEmpty())
+            it = ret.erase(it);
+        else if(it->startsWith(QLatin1Char('[')))
         {
-            setError(FailedToStart);
-            setErrorText(i18n("Failed to start command."));
-        }
-        else if(error == QProcess::Crashed)
-        {
-            setError(Crashed);
-            setErrorText(i18n("Command crashed."));
+            const QString& line = *it;
+            QRegularExpressionMatch match = re.match(line.trimmed());
+            if(match.hasMatch())
+            {
+                const int current = match.capturedRef(1).toInt();
+                const int total = match.capturedRef(2).toInt();
+                const QString action = match.captured(3);
+
+                emitPercent(current, total);
+                infoMessage(this, action);
+            }
+            else
+                qCDebug(COLCON) << "Could not understand status line:" << line;
+
+            it = ret.erase(it);
         }
         else
-        {
-            setError(UnknownExecError);
-            setErrorText(i18n("Unknown error executing command."));
-        }
+            it++;
     }
 
-    emitResult();
-}
-
-void ColconBuildJob::procFinished(int exitcode)
-{
-    auto model = qobject_cast<KDevelop::OutputModel*>(OutputJob::model());
-
-    if(exitcode != 0)
-    {
-        setError(FailedShownError);
-        model->appendLine(i18n("*** Failed ***"));
-    }
-    else
-        model->appendLine(i18n("*** Finished ***"));
-
-    emitResult();
+    model()->appendLines(ret);
 }

@@ -4,7 +4,7 @@
 #ifndef COLCON_BUILD_JOB_H
 #define COLCON_BUILD_JOB_H
 
-#include <outputview/outputjob.h>
+#include <outputview/outputexecutejob.h>
 
 #include <QProcess>
 
@@ -14,29 +14,22 @@ namespace KDevelop
     class CommandExecutor;
 }
 
-class ColconBuildJob : public KDevelop::OutputJob
+class ColconBuildJob : public KDevelop::OutputExecuteJob
 {
 Q_OBJECT
 public:
     enum ErrorType {
-        FailedToStart = UserDefinedError,
-        UnknownExecError,
-        Crashed,
+        Failed
     };
 
     explicit ColconBuildJob(KDevelop::IProject* project, QObject* parent = nullptr);
 
-    void start() override;
-    bool doKill() override;
-
-private Q_SLOTS:
-    void procFinished(int exitcode);
-    void procError(QProcess::ProcessError error);
+protected Q_SLOTS:
+    void postProcessStdout(const QStringList& lines) override;
+    void postProcessStderr(const QStringList& lines) override;
 
 private:
-    QString m_workspace;
-    KDevelop::CommandExecutor* m_exec = nullptr;
-    bool m_killed = false;
+    void appendLines(const QStringList& lines);
 };
 
 #endif
