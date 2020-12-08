@@ -33,10 +33,8 @@ ColconBuildJob::ColconBuildJob(KDevelop::IProject* project, QObject* parent)
     // KDevelop's line splitter...
     *this << "bash"
         << "-c"
-        << ". /opt/ros/melodic/setup.sh && stdbuf -o0 colcon build"
-        " --symlink-install"
+        << "./.build.sh"
         " --event-handlers status+ console_start_end-"
-        " --cmake-args -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo"
         " | stdbuf -o0 tr '\\r' '\\n'";
 
     QString title = i18nc("Building: <project name>", "Building: %1", project->name());
